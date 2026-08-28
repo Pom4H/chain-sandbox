@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=../versions.env
+# The path is resolved from the script at runtime, so ShellCheck cannot follow it statically.
+# shellcheck disable=SC1091
 source "$ROOT/versions.env"
 
 SANDBOX_HOME="${CHAIN_SANDBOX_HOME:-$HOME/.cache/chain-sandbox}"
