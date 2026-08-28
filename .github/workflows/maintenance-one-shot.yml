@@ -1,0 +1,159 @@
+name: Maintenance one-shot
+
+on:
+  push:
+    paths:
+      - .github/workflows/maintenance-one-shot.yml
+
+permissions:
+  contents: write
+
+jobs:
+  verify-bitcoin-signer:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Patch deterministic descriptor signer
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('bin/chain-sandbox')
+          text = path.read_text()
+
+          constants = '''ETHEREUM_FIRST_ADDRESS="0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"\nSOLANA_TEST_PUBKEY="9C6hybhQ6Aycep9jaUnP6uL9ZYvDjUp1aSkFWPUFJtpj"'''
+          replacement_constants = '''ETHEREUM_FIRST_ADDRESS="0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"\nBITCOIN_TEST_WIF="cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN87JcbXMTcA"\nBITCOIN_TEST_PUBKEY="0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"\nBITCOIN_SIGNER_WALLET="signer"\nSOLANA_TEST_PUBKEY="9C6hybhQ6Aycep9jaUnP6uL9ZYvDjUp1aSkFWPUFJtpj"'''
+          if constants not in text:
+              raise SystemExit('constants anchor not found')
+          text = text.replace(constants, replacement_constants, 1)
+
+          start = text.index('start_bitcoin() {')
+          end = text.index('\nhealth_bitcoin() {', start)
+          new_start = r'''start_bitcoin() {
+            need docker
+            need curl
+            stop_bitcoin
+
+            docker run --detach --rm \
+              --name chain-sandbox-bitcoin \
+              --publish "127.0.0.1:${BITCOIN_PORT}:18443" \
+              "$BITCOIN_IMAGE" \
+              -printtoconsole \
+              -regtest=1 \
+              -server=1 \
+              -rpcbind=0.0.0.0 \
+              -rpcallowip=0.0.0.0/0 \
+              -rpcuser=chain \
+              -rpcpassword=sandbox \
+              -fallbackfee=0.0002 >/dev/null
+
+            if ! wait_until 60 bitcoin_rpc '{"jsonrpc":"1.0","id":"health","method":"getblockchaininfo","params":[]}'; then
+              docker logs chain-sandbox-bitcoin >&2 || true
+              return 1
+            fi
+
+            docker exec chain-sandbox-bitcoin \
+              bitcoin-cli -regtest -rpcuser=chain -rpcpassword=sandbox \
+              createwallet sandbox >/dev/null
+
+            local miner_address
+            miner_address="$(docker exec chain-sandbox-bitcoin \
+              bitcoin-cli -regtest -rpcuser=chain -rpcpassword=sandbox -rpcwallet=sandbox \
+              getnewaddress '' bech32)"
+            docker exec chain-sandbox-bitcoin \
+              bitcoin-cli -regtest -rpcuser=chain -rpcpassword=sandbox -rpcwallet=sandbox \
+              generatetoaddress 101 "$miner_address" >/dev/null
+
+            docker exec chain-sandbox-bitcoin \
+              bitcoin-cli -regtest -rpcuser=chain -rpcpassword=sandbox \
+              -named createwallet wallet_name="$BITCOIN_SIGNER_WALLET" blank=true descriptors=true >/dev/null
+
+            local descriptor_info checksum private_descriptor test_address import_result txid
+            descriptor_info="$(docker exec chain-sandbox-bitcoin \
+              bitcoin-cli -regtest -rpcuser=chain -rpcpassword=sandbox \
+              getdescriptorinfo "wpkh(${BITCOIN_TEST_WIF})")"
+            checksum="$(printf '%s' "$descriptor_info" | sed -n 's/.*"checksum": *"\([^"]*\)".*/\1/p')"
+            [[ ${#checksum} -eq 8 ]]
+            private_descriptor="wpkh(${BITCOIN_TEST_WIF})#${checksum}"
+
+            import_result="$(docker exec chain-sandbox-bitcoin \
+              bitcoin-cli -regtest -rpcuser=chain -rpcpassword=sandbox -rpcwallet="$BITCOIN_SIGNER_WALLET" \
+              importdescriptors "[{\"desc\":\"${private_descriptor}\",\"timestamp\":\"now\"}]")"
+            printf '%s' "$import_result" | grep -q '"success": true'
+
+            test_address="$(docker exec chain-sandbox-bitcoin \
+              bitcoin-cli -regtest -rpcuser=chain -rpcpassword=sandbox \
+              deriveaddresses "$private_descriptor" \
+              | sed -n 's/.*"\([a-z0-9]*\)".*/\1/p')"
+            [[ -n "$test_address" ]]
+
+            txid="$(docker exec chain-sandbox-bitcoin \
+              bitcoin-cli -regtest -rpcuser=chain -rpcpassword=sandbox -rpcwallet=sandbox \
+              sendtoaddress "$test_address" 1)"
+            [[ ${#txid} -eq 64 ]]
+            docker exec chain-sandbox-bitcoin \
+              bitcoin-cli -regtest -rpcuser=chain -rpcpassword=sandbox -rpcwallet=sandbox \
+              generatetoaddress 1 "$miner_address" >/dev/null
+
+            emit_endpoint BITCOIN_RPC_URL bitcoin-rpc-url \
+              "http://chain:sandbox@127.0.0.1:${BITCOIN_PORT}"
+            emit_env BITCOIN_TEST_ADDRESS "$test_address"
+            emit_env BITCOIN_TEST_PUBKEY "$BITCOIN_TEST_PUBKEY"
+            emit_env BITCOIN_SIGNER_WALLET "$BITCOIN_SIGNER_WALLET"
+          }'''
+          text = text[:start] + new_start + text[end:]
+
+          start = text.index('self_test_bitcoin() {')
+          end = text.index('\nstop_ethereum() {', start)
+          new_self_test = r'''self_test_bitcoin() {
+            health_bitcoin
+            local blocks balance address_info
+            blocks="$(docker exec chain-sandbox-bitcoin \
+              bitcoin-cli -regtest -rpcuser=chain -rpcpassword=sandbox getblockcount)"
+            [[ "$blocks" -ge 102 ]]
+            balance="$(docker exec chain-sandbox-bitcoin \
+              bitcoin-cli -regtest -rpcuser=chain -rpcpassword=sandbox -rpcwallet="$BITCOIN_SIGNER_WALLET" \
+              getbalance)"
+            awk -v balance="$balance" 'BEGIN { exit !(balance > 0) }'
+            address_info="$(docker exec chain-sandbox-bitcoin \
+              bitcoin-cli -regtest -rpcuser=chain -rpcpassword=sandbox -rpcwallet="$BITCOIN_SIGNER_WALLET" \
+              getaddressinfo "$BITCOIN_TEST_ADDRESS")"
+            printf '%s' "$address_info" | grep -q '"iswitness": true'
+            printf '%s' "$address_info" | grep -q '"witness_version": 0'
+          }
+'''
+          text = text[:start] + new_self_test + text[end:]
+          path.write_text(text)
+
+      - name: Parse and lint
+        run: |
+          bash -n bin/chain-sandbox
+          shellcheck bin/chain-sandbox
+
+      - name: Start deterministic Bitcoin signer
+        run: bash bin/chain-sandbox start bitcoin
+
+      - name: Exercise deterministic Bitcoin signer
+        run: |
+          bash bin/chain-sandbox self-test bitcoin
+          test "$BITCOIN_TEST_PUBKEY" = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
+          test -n "$BITCOIN_TEST_ADDRESS"
+          docker exec chain-sandbox-bitcoin \
+            bitcoin-cli -regtest -rpcuser=chain -rpcpassword=sandbox -rpcwallet="$BITCOIN_SIGNER_WALLET" \
+            listunspent 1 9999999 | grep -q '"spendable": true'
+
+      - name: Commit verified sandbox
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add bin/chain-sandbox
+          git commit -m 'Expose deterministic Bitcoin signer'
+          git push origin HEAD:main
+
+      - name: Stop Bitcoin
+        if: always()
+        run: bash bin/chain-sandbox stop bitcoin
