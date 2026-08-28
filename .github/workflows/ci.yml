@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse scripts
+        run: bash -n bin/chain-sandbox
+      - name: ShellCheck
+        run: shellcheck bin/chain-sandbox
+
+  sandbox:
+    needs: shell
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        chain: [bitcoin, ethereum, solana]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start sandbox
+        uses: ./
+        with:
+          chain: ${{ matrix.chain }}
+
+      - name: Exercise RPC
+        run: bash bin/chain-sandbox self-test "${{ matrix.chain }}"
+
+      - name: Stop sandbox
+        if: always()
+        run: bash bin/chain-sandbox stop "${{ matrix.chain }}"

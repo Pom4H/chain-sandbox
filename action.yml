@@ -1,0 +1,22 @@
+name: Chain Sandbox
+description: Start a deterministic local blockchain node in the current GitHub Actions job
+
+author: Pom4H
+
+inputs:
+  chain:
+    description: bitcoin, ethereum, or solana
+    required: true
+
+outputs:
+  rpc-url:
+    description: RPC URL for the started chain
+    value: ${{ steps.start.outputs.rpc-url }}
+
+runs:
+  using: composite
+  steps:
+    - id: start
+      name: Start ${{ inputs.chain }} sandbox
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/bin/chain-sandbox" start "${{ inputs.chain }}"
