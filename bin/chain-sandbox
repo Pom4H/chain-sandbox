@@ -16,6 +16,8 @@ BITCOIN_PORT="${CHAIN_SANDBOX_BITCOIN_PORT:-18443}"
 ETHEREUM_PORT="${CHAIN_SANDBOX_ETHEREUM_PORT:-8545}"
 SOLANA_PORT="${CHAIN_SANDBOX_SOLANA_PORT:-8899}"
 SOLANA_FAUCET_PORT="${CHAIN_SANDBOX_SOLANA_FAUCET_PORT:-9900}"
+ETHEREUM_MNEMONIC="test test test test test test test test test test test junk"
+ETHEREUM_FIRST_ADDRESS="0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
 
 usage() {
   cat <<'EOF'
@@ -159,6 +161,7 @@ start_ethereum() {
     --host 0.0.0.0 \
     --port 8545 \
     --chain-id 31337 \
+    --mnemonic "$ETHEREUM_MNEMONIC" \
     --accounts 10 \
     --balance 10000 >/dev/null
 
@@ -181,7 +184,7 @@ self_test_ethereum() {
   ethereum_rpc '{"jsonrpc":"2.0","id":2,"method":"eth_blockNumber","params":[]}' \
     | grep -q '"result"'
   ethereum_rpc '{"jsonrpc":"2.0","id":3,"method":"eth_accounts","params":[]}' \
-    | grep -q '0x'
+    | grep -qi "$ETHEREUM_FIRST_ADDRESS"
 }
 
 agave_dir() {
