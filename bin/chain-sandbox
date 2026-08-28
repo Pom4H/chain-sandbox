@@ -18,6 +18,7 @@ SOLANA_PORT="${CHAIN_SANDBOX_SOLANA_PORT:-8899}"
 SOLANA_FAUCET_PORT="${CHAIN_SANDBOX_SOLANA_FAUCET_PORT:-9900}"
 ETHEREUM_MNEMONIC="test test test test test test test test test test test junk"
 ETHEREUM_FIRST_ADDRESS="0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+SOLANA_TEST_PUBKEY="9C6hybhQ6Aycep9jaUnP6uL9ZYvDjUp1aSkFWPUFJtpj"
 
 usage() {
   cat <<'EOF'
@@ -45,15 +46,21 @@ wait_until() {
   return 1
 }
 
+emit_env() {
+  local name="$1"
+  local value="$2"
+  printf '%s=%s\n' "$name" "$value"
+  if [[ -n "${GITHUB_ENV:-}" ]]; then
+    printf '%s=%s\n' "$name" "$value" >>"$GITHUB_ENV"
+  fi
+}
+
 emit_endpoint() {
   local env_name="$1"
   local output_name="$2"
   local value="$3"
 
-  printf '%s=%s\n' "$env_name" "$value"
-  if [[ -n "${GITHUB_ENV:-}" ]]; then
-    printf '%s=%s\n' "$env_name" "$value" >>"$GITHUB_ENV"
-  fi
+  emit_env "$env_name" "$value"
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     printf 'rpc-url=%s\n' "$value" >>"$GITHUB_OUTPUT"
     printf '%s=%s\n' "$output_name" "$value" >>"$GITHUB_OUTPUT"
@@ -226,6 +233,10 @@ solana_pid_file() {
   printf '%s/solana.pid' "$STATE_DIR"
 }
 
+solana_test_keypair_file() {
+  printf '%s/solana-test-keypair.json' "$STATE_DIR"
+}
+
 stop_solana() {
   local pid_file pid
   pid_file="$(solana_pid_file)"
@@ -248,12 +259,17 @@ start_solana() {
   install_agave
   stop_solana
 
-  local validator ledger log pid_file
+  local validator solana_cli keypair ledger log pid_file rpc_url
   validator="$(agave_dir)/bin/solana-test-validator"
+  solana_cli="$(agave_dir)/bin/solana"
+  keypair="$(solana_test_keypair_file)"
   ledger="$STATE_DIR/solana-ledger"
   log="$LOG_DIR/solana.log"
   pid_file="$(solana_pid_file)"
+  rpc_url="http://127.0.0.1:${SOLANA_PORT}"
   rm -rf "$ledger"
+  cp "$ROOT/fixtures/solana-keypair.json" "$keypair"
+  chmod 600 "$keypair"
 
   "$validator" \
     --reset \
@@ -268,8 +284,12 @@ start_solana() {
     return 1
   fi
 
-  emit_endpoint SOLANA_RPC_URL solana-rpc-url \
-    "http://127.0.0.1:${SOLANA_PORT}"
+  "$solana_cli" airdrop 10 "$SOLANA_TEST_PUBKEY" --url "$rpc_url" >/dev/null
+
+  emit_endpoint SOLANA_RPC_URL solana-rpc-url "$rpc_url"
+  emit_env SOLANA_TEST_KEYPAIR "$keypair"
+  emit_env SOLANA_TEST_PUBKEY "$SOLANA_TEST_PUBKEY"
+  emit_env SOLANA_CLI "$solana_cli"
 }
 
 health_solana() {
@@ -281,6 +301,10 @@ self_test_solana() {
   health_solana
   solana_rpc '{"jsonrpc":"2.0","id":2,"method":"getLatestBlockhash"}' \
     | grep -q 'blockhash'
+  local solana_cli
+  solana_cli="$(agave_dir)/bin/solana"
+  "$solana_cli" balance "$SOLANA_TEST_PUBKEY" --url "http://127.0.0.1:${SOLANA_PORT}" \
+    | grep -Eq '^[1-9][0-9]*(\.[0-9]+)? SOL$'
 }
 
 start_chain() {
