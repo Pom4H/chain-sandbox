@@ -12,7 +12,7 @@ jobs:
       - name: Parse scripts
         run: bash -n bin/chain-sandbox
       - name: ShellCheck
-        run: shellcheck bin/chain-sandbox
+        run: shellcheck -x bin/chain-sandbox
 
   sandbox:
     needs: shell
